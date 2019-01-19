@@ -1,0 +1,18 @@
+{
+    "name": "OSPF something name",
+    "topology": ["R1-R2", "R2-R2", "R1-R2-R3", "R3-R4", "R10-R12", "R4-R10-R12"],
+    "conf": {
+        "OSPF_areas": {
+            "R1-R2": 0,
+            "R1-R2-R3": 1,
+            "R3-R4": 2,
+            "R3-R5": 2
+         },
+         "Loops": {
+         "R1": 3,
+         "R2": 4,
+         "R3": 2,
+         "R4": 1
+         }
+     }
+}         
