@@ -1,8 +1,8 @@
-
+#!/usr/bin/env python3
 '''
 Created on Sat Dec 29 13:16:08 2018
 
-@author: wizard
+@author: ipmess
 '''
 
 import os, json, re, uuid
@@ -30,7 +30,11 @@ def skelecfg(hostname='Router'):
   
   return cfg
 
-__WRITETOFILES__ = False
+__WRITETOFILES__ = True
+__IOUImage__ = 'i86bi-linux-l3-adventerprisek9-15.5.2T.bin'
+__BaseConsole__ = 5000
+__Compute__ = 'vm' # or 'local'
+
 
 EthernetInterface = {
     1:'Ethernet0/0', 2:'Ethernet0/1', 3:'Ethernet0/2', 4:'Ethernet0/3',
@@ -51,7 +55,6 @@ project = {
    'auto_close': True,
    'auto_open': False,
    'auto_start': False,
-   'grid_size': 75,
    'name': stopo['name'],
    'project_id': str(uuid.uuid1()),
    'revision': 8,
@@ -61,14 +64,12 @@ project = {
    'show_interface_labels': True,
    'show_layers': False,
    'snap_to_grid': False,
-   'supplier': None,
    'type': 'topology',
-   'variables': None,
    'version': '2.1.11',
    'zoom': 100
 }
 
-# Get list for nodes from list of links that are stored in 'topology'
+# Get list for nodes from list of links that are stored in stopo['topology']
 
 nodes_on_link = {}
 nodes = []
@@ -85,7 +86,6 @@ for link in stopo['topology']:
 nodes = list(set(nodes))
 nodes.sort() # for cosmetic reasons
 
-
 topology = {
   'computes': [],
   'drawings': [],
@@ -99,13 +99,14 @@ topology = {
 node_no = {}
 for n in nodes:
   node_no[n] = re.search('[0-9]+', n).group(0)
+  # if node_no[n] is None: FOR v2: assign a semi-random number
   assert int(node_no[n]) < 21 , 'At this time, only node numbers < 21 are supported'
 
 
 for i in range(len(nodes)):
   device = {
-      'compute_id': 'local',
-      'console': 2000+i+1,
+      'compute_id': __Compute__,
+      'console': __BaseConsole__+i+1,
       'console_type': 'telnet',
       'first_port_name': None,
       'height': 45,
@@ -125,15 +126,13 @@ for i in range(len(nodes)):
           'l1_keepalives': False,
           'md5sum': '45e99761a95cbd3ee3924ecf0f3d89e5',
           'nvram': 64,
-          'path': 'i86bi-linux-l3-adventerprisek9-15.5.2T.bin',
+          'path': __IOUImage__,
           'ram': 256,
           'serial_adapters': 0,
           'use_default_iou_values': True
           },
       'symbol': ':/symbols/router.svg',
       'width': 66,
-      'last_used_adapter': 0,
-      'last_used_port': -1
       }
   topology['nodes'].append(device)
 
@@ -211,7 +210,7 @@ if 'conf' in stopo:
     for link, area in areas.items():
       # Verify that the link exists in the topology
       if link not in stopo['topology']:
-        print('Link ' + link + ' only exists in OSPF area configuration but not in topogy description')
+        # print('Link ' + link + ' only exists in OSPF area configuration but not in topology description')
         continue
       # Add OSPF area information into connections list:
       for conn in connections:
@@ -225,7 +224,6 @@ if 'conf' in stopo:
   if 'Loops' in stopo['conf']:
     # Add Loopback interfaces to configuration
     loopbacks = stopo['conf']['Loops']
-    # print ('Loopback interfaces configuration: '+ str(loopbacks))
     for node, nol in loopbacks.items():
       if node not in nodes:
         print('Node ' + node + ' is only referenced in the Loops configuration section; will be ignored')
@@ -286,8 +284,9 @@ for conn in connections:
 
 # Create links list of dictionaries:
 links = []
-this_link = {}
-for link in stopo['topology']:
+
+for link, subn in link_subnets.items():
+  this_link = {}
   this_link['name'] = link
   this_link['nodes'] = []
   for conn in connections:
@@ -296,138 +295,98 @@ for link in stopo['topology']:
       link_data['name'] = conn['node']
       # Find the node's UUID
       for node in topology['nodes']:
-        if node['name'] == conn['node']:
+        if node['name'] == link_data['name']:
           link_data['node_id'] = node['node_id']
           port_segment_size = node['port_segment_size']
+          break
       # Determine Adapter and Port numbers from conn['interface']
-      link_data['Adapter'] = AdapterPort[conn['interface']]['Adapter']
-      link_data['Port'] = AdapterPort[conn['interface']]['Port']
+      link_data['adapter_number'] = AdapterPort[conn['interface']]['Adapter']
+      link_data['port_number'] = AdapterPort[conn['interface']]['Port']
       this_link['nodes'].append(link_data)
+  # Now we've checked all connection endpoints from the connections list.
+  # We now add the  results (stored within the this_link dictionary) to the links list:
   links.append(this_link)
-  
-
-max_switch_number = 0
-for link in reversed(links):
-  sw = re.compile(r'^Switch([1-9]+)')
-  if len(link['nodes']) > 2:
-    # Create new swtich:
-    max_switch_number += 1
-    switch_console = max(list(map(int, list(node_no.values())))) + max_switch_number
-    
-
 
 # Sanitize links list by making all links point-to-point:
-for link in reversed(stopo['topology']):
-  # Since i will be deleting list members, i have to iterate backwards, or risk
-  # deleting a members, then index will move on, point to the wrong element, 
-  # and skip a me,ber. Assume i am at 1 and delete member with index 1.
-  # The following iteration will be pointing to index 2 (which after the deletion 
-  # is the original member 3). reversed does not have this risk.
-  p = re.compile('[a-zA-Z0-9]+')
-  sw = re.compile(r'^Switch([1-9]+)')
-  nodes_on_link = p.findall(link)
-  nodes_on_link = list(set(nodes_on_link)) # Sanitize if there is a link to self
-  nodes_on_link.sort()
-  # print('Nodes on Link:' + str(nodes_on_link))
-  # print('------------------------------------')
-  if len(nodes_on_link) > 2:
-    # Find oldest current switch and create next one
-    new_sw_no = 1
-    largest_console = 1999
-    for n in topology['nodes']:
-      if bool(sw.match(n['name'])):
-        found_switch = re.search(r'^Switch([1-9]+)',n['name'])
-        new_sw_no = str(int(found_switch.group(1)) + 1)
-      if n['console'] > largest_console:
-        largest_console = n['console']
-        
-    # Create a skeleton Ethernetswitch
-    new_switch = {
-    "compute_id": "local",
-    "console": largest_console + 1 ,
-    "console_type": "telnet",
-    "first_port_name": None,
-    "height": 32,
-    "name": 'Switch'+str(new_sw_no),
-    "node_id": str(uuid.uuid1()),
-    "node_type": "ethernet_switch",
-    "port_name_format": "Ethernet{0}",
-    "port_segment_size": len(nodes_on_link),
-    "properties": {
-        "ports_mapping": []
+# Resolve links with multiple nodes on a common segment (aka add any necessary switches):
+max_switch_number = 0
+physical_links = []
+switches = []
+
+for link in links:
+  plink = {}
+  if len(link['nodes']) == 2:
+    physical_links.append(link)
+  elif len(link['nodes']) > 2:
+    # Create a intermediary (switch)
+    max_switch_number += 1
+    sw_name = 'Switch'+str(max_switch_number)
+    sw_uuid = str(uuid.uuid1())
+    sw_port = 0
+    for node_edge in link['nodes']:
+      plink = {} # Create an empty dictionary for the current physical link:
+      plink['name'] = sw_name + '-' + node_edge['name']
+      plink['nodes'] = []
+      plink['nodes'].append(node_edge)
+      plink['nodes'].append({'name':sw_name, 'node_id':sw_uuid, 'adapter_number':0, 'port_number':sw_port})
+      sw_port += 1
+      physical_links.append(plink)
+    
+    switches.append({'name':sw_name, 'node_id': sw_uuid, 'port_segment_size':sw_port, \
+                     'console':__BaseConsole__ + max(list(map(int, list(node_no.values())))) + max_switch_number})
+
+for switch in switches:
+  new_switch = {
+    'compute_id': __Compute__,
+    'console': switch['console'] ,
+    'console_type': 'telnet',
+    'first_port_name': None,
+    'height': 32,
+    'name': switch['name'],
+    'node_id': switch['node_id'],
+    'node_type': 'ethernet_switch',
+    'port_name_format': 'Ethernet{0}',
+    'port_segment_size': switch['port_segment_size'],
+    'properties': {
+        'ports_mapping': []
       },
-      'symbol': ":/symbols/ethernet_switch.svg",
-      "width": 72
-    }
+      'symbol': ':/symbols/ethernet_switch.svg',
+      'width': 72
+  }
+  
+  for i in range(switch['port_segment_size']):
+    eth_port = {"name": 'Ethernet' + str(i), "port_number": i, "type": "access", "vlan": 1}
+    new_switch['properties']['ports_mapping'].append(eth_port)
+
+  # Push the newly created switch into the nodes list of topology['nodes']
+  topology['nodes'].append(new_switch)
     
-    for i in range(len(nodes_on_link)):
-      eth_port = {"name": 'Ethernet' + str(i), "port_number": i, "type": "access", "vlan": 1}
-      new_switch['properties']['ports_mapping'].append(eth_port)
-    
-    
-    new_switch.update({'last_used_adapter': 0, 'last_used_port': -1})
-    # Generate new link list insert the new link list into stopo['topology']
-    for n in nodes_on_link:
-      stopo['topology'].append(new_switch['name'] + '-' + n)
-    
-    # Delete the old list of multiple nodes from stopo['topology']
-    del stopo['topology'][stopo['topology'].index(link)]
 
-    # Push the newly created switch into the nodes list of topology['nodes']
-    topology['nodes'].append(new_switch)
-
-  elif len(nodes_on_link) < 2:
-    # Remove this link from stopo['topology']
-    del stopo['topology'][stopo['topology'].index(link)]
-
-  else:
-    continue
-
-# print('----------------------------------')
-# print('stopo[topology] after sanitaion:')
-# print(stopo['topology'])
-
-'''
 # Add links into the topology:
 
-for link in stopo['topology']:
-  p = re.compile('[a-zA-Z0-9]+')
-  nodes_on_link = p.findall(link)
-  # print('Nodes on Link:' + str(nodes_on_link))
-  assert len(nodes_on_link) == 2, "Non p2p link - cannot add to GNS3 JSON"
+for link in physical_links:
   
-  # Initialise link data structure
-  glink = { 'filters': {}, 'link_id': str(uuid.uuid1()), 'nodes': [], 'suspend': False }
+  nodes_on_link = link['nodes']
+  # print('Nodes on Link:' + str(nodes_on_link))
+  assert len(link['nodes']) == 2, "Non p2p link - cannot add to GNS3 JSON"
+  
+  # Initialise link data structure (tlink: topology link )
+  tlink = { 'filters': {}, 'link_id': str(uuid.uuid1()), 'nodes': [],
+           'suspend': False,
+           'link_type': 'ethernet'}
   
   # Populate the nodes list:
   for node in nodes_on_link:
-    # Initialize glink node dictionary:
-    glnode = { 'adapter_number': 0, 'node_id': '', 'port_number': 0}
-    # find UUIDs of each node and next port_number:
-    for n in topology['nodes']:
-      if n['name'] == node:
-        glnode['node_id'] = n['node_id']
-        if n['last_used_port']+1 > n['port_segment_size']-1:
-          glnode['adapter_number'] = n['last_used_adapter']+1
-          glnode['port_number'] = 0
-        else:
-          glnode['port_number'] = n['last_used_port']+1
-        
-        n['last_used_adapter'] = glnode['adapter_number']
-        n['last_used_port'] = glnode['port_number']
-        glink['nodes'].append(glnode)   
+    # Initialize this node's dictionary: (which will later be added to the tlink 'nodes' list)
+    glnode = {'adapter_number': node['adapter_number'], 
+              'node_id': node['node_id'], 
+              'port_number': node['port_number']}
+    tlink['nodes'].append(glnode)   
   
-  topology['links'].append(glink)
-  
-for n in topology['nodes']:
-  del n['last_used_adapter']
-  del n['last_used_port']
+  # Not the tlink dictionary is done. Push it into topology['links']:
+  topology['links'].append(tlink)
 
 project['topology']=topology
-
-# pp.pprint(topology)
-
-# print(json.dumps(project, indent=4, sort_keys=True))
 
 # Before dumping into file, validate the project JSON:
 with open('gns3_topo_schema.json', 'r') as f:
@@ -439,31 +398,33 @@ gns3_filename = re.sub(r' ', r'-', stopo['name']) + '.gns3'
 
 if __WRITETOFILES__:
   with open(gns3_filename, 'w') as f:
-    json.dump(project, f)
+    json.dump(project, f, indent=4)
 
   # Write configurations to startup-config.cfg files:
 
   if not os.path.exists('./project-files/iou'):
     os.makedirs('./project-files/iou')
 
-  node_id='error'
-  for node in nodes:
+  for node, config in cfg.items():
+    node_id = 'error'
     for n in topology['nodes']:
       if n['name'] == node:
         node_id = n['node_id']
         break
+    
+    assert node_id != 'error', 'Node_id could not be found'
     
     if not os.path.exists('./project-files/iou/' + node_id):
       os.makedirs('./project-files/iou/' + node_id)
     
     with open('./project-files/iou/' + node_id + '/startup-config.cfg', 'w') as f:
       f.write('\n'.join(cfg[node].ioscfg))
-
-'''
-
-  
+      f.write('\n') # Lest we get the %PARSER-4-BADCFG: Unexpected end of configuration file. SYSLOG message
 
 
 
-     
-        
+
+
+
+
+

@@ -102,3 +102,7 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# GNS3 project artifacts
+project-files/
+*.gns3
